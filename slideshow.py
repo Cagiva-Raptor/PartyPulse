@@ -11,6 +11,9 @@ Alleen de Python-standaardbibliotheek. Album + instellingen staan in
 config.json (ook aanpasbaar via de web-UI op /config).
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -22,8 +25,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+CONFIG_PATH = os.environ.get("PARTYPULSE_CONFIG") or os.path.join(BASE_DIR, "config.json")
+AUTH_PATH = os.environ.get("PARTYPULSE_AUTH") or os.path.join(
+    os.path.dirname(CONFIG_PATH), "auth.json"
+)
+STATIC_DIR = os.environ.get("PARTYPULSE_STATIC") or os.path.join(BASE_DIR, "static")
 
 DEFAULTS = {
     "album_url": "",
@@ -65,6 +71,25 @@ def save_config(updates):
         json.dump(cfg, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
     return cfg
+
+
+def load_users():
+    """Gebruikers uit auth.json; leeg/ontbrekend bestand = geen auth."""
+    try:
+        with open(AUTH_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    users = data.get("users") if isinstance(data, dict) else None
+    return users if isinstance(users, dict) else {}
+
+
+def make_user_record(password, salt=None):
+    import secrets
+
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+    return {"salt": salt, "hash": digest}
 
 
 def fetch_html(url, timeout=30):
@@ -203,6 +228,30 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
+    def _require_auth(self):
+        users = load_users()
+        if not users:
+            return True
+        header = self.headers.get("Authorization", "")
+        if header.startswith("Basic "):
+            try:
+                raw = base64.b64decode(header[6:]).decode("utf-8")
+                user, _, password = raw.partition(":")
+            except (ValueError, UnicodeDecodeError):
+                user, password = "", ""
+            record = users.get(user)
+            if isinstance(record, dict):
+                salt = str(record.get("salt", ""))
+                expected = str(record.get("hash", ""))
+                digest = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+                if hmac.compare_digest(digest, expected):
+                    return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="PartyPulse"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -232,6 +281,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
         if parsed.path == "/api/photos":
@@ -253,6 +304,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(404, "not found")
 
     def do_POST(self):
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
         if parsed.path != "/api/config":
             self.send_error(404, "not found")

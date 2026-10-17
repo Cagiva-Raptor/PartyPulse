@@ -66,10 +66,41 @@ WantedBy=multi-user.target
 - Het album moet **publiek gedeeld** blijven; de lijst wordt via de publieke pagina
   uitgelezen (geen OAuth).
 - Video's verschijnen enkel als stilstaand beeld.
-- De server heeft **geen authenticatie**. Zet hem niet zomaar open; zie hieronder.
 
-## Beveiligen (aanbevolen)
+## Authenticatie (optioneel)
 
-PartyPulse is bedoeld voor een vertrouwd (feest-)LAN. Wil je de web-UI en `/config`
-afschermen, zet er HTTP **Basic Auth** voor (credentials in een `chmod 600`-bestand,
-niet in `config.json` of de systemd-unit) en combineer dat met HTTPS.
+De server is standaard open. Zodra er een `auth.json` naast de config staat, vraagt hij
+HTTP **Basic Auth** op alles (pagina, `/config` en de API). Ontbrekend of leeg bestand =
+geen auth.
+
+`auth.json` (zet op `chmod 600`, niet committen):
+
+```json
+{
+  "users": {
+    "admin": { "salt": "<hex>", "hash": "<sha256(salt+ww) hex>" }
+  }
+}
+```
+
+Gebruikers toevoegen/wijzigen:
+
+```python
+import json, os
+from slideshow import make_user_record
+path = "auth.json"
+data = {"users": {}}
+if os.path.exists(path):
+    data = json.load(open(path))
+data["users"]["naam"] = make_user_record("wachtwoord")
+json.dump(data, open(path, "w"), indent=2)
+os.chmod(path, 0o600)
+```
+
+Paden zijn te overschrijven met de omgevingsvariabelen `PARTYPULSE_CONFIG`,
+`PARTYPULSE_AUTH` en `PARTYPULSE_STATIC`, zodat één codebase meerdere poorten/albums kan
+bedienen (elk met eigen config + gebruikers).
+
+> Let op: Basic Auth versleutelt niets — het wachtwoord gaat base64-leesbaar over HTTP.
+> Combineer met HTTPS (TLS-terminatie of een reverse proxy) op een niet-vertrouwd netwerk.
+
