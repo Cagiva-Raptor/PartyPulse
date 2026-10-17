@@ -1,0 +1,11 @@
+# Secrets / lokale bestanden — nooit committen
+auth.json
+*.pem
+*.key
+config.local.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

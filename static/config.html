@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slideshow instellingen</title>
+<style>
+  body { margin: 0; background: #111; color: #eee;
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 40px auto; padding: 0 20px; }
+  h1 { font-size: 22px; }
+  label { display: block; margin: 18px 0 6px; font-weight: 600; }
+  input, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #444;
+          background: #1b1b1b; color: #eee; font-size: 15px; box-sizing: border-box; }
+  .row { display: flex; gap: 16px; }
+  .row > div { flex: 1; }
+  button { margin-top: 24px; padding: 12px 22px; border: 0; border-radius: 8px;
+           background: #3b82f6; color: #fff; font-size: 16px; cursor: pointer; }
+  button:hover { background: #2563eb; }
+  #msg { margin-top: 16px; min-height: 24px; }
+  #msg.ok { color: #6ee7a8; }
+  #msg.err { color: #ff9a9a; }
+  a { color: #7db8ff; }
+  .meta { color: #999; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Google Photos slideshow — instellingen</h1>
+  <p class="meta">Het album wordt live uitgelezen; wijzigingen zijn direct actief (de
+     slideshow herlaadt aan het einde van elke ronde).</p>
+
+  <form id="form">
+    <label for="album_url">Album-URL (share-link)</label>
+    <input id="album_url" type="url" placeholder="https://photos.app.goo.gl/…" required>
+
+    <label for="slide_seconds">Seconden per foto</label>
+    <input id="slide_seconds" type="number" min="1" step="1">
+
+    <label for="order">Volgorde</label>
+    <select id="order">
+      <option value="oldest">Oudste eerst (chronologisch)</option>
+      <option value="newest">Nieuwste eerst</option>
+      <option value="none">Zoals het album ze geeft</option>
+    </select>
+
+    <div class="row">
+      <div>
+        <label for="image_width">Beeldbreedte (px)</label>
+        <input id="image_width" type="number" min="400" step="80">
+      </div>
+      <div>
+        <label for="cache_seconds">Server-cache (s)</label>
+        <input id="cache_seconds" type="number" min="0" step="1">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="poll_seconds">Check nieuwe foto's elke (s)</label>
+        <input id="poll_seconds" type="number" min="2" step="1">
+      </div>
+      <div>
+        <label for="min_show_seconds">Min. tijd per foto voor onderbreking (s)</label>
+        <input id="min_show_seconds" type="number" min="0" step="0.5">
+      </div>
+    </div>
+
+    <label><input id="priority_new" type="checkbox" style="width:auto"> Nieuwe foto's direct als volgende tonen (huidige onderbreken)</label>
+    <label><input id="show_overlay" type="checkbox" style="width:auto"> Album-naam, status en ronde-duur tonen</label>
+
+    <button type="submit">Opslaan</button>
+  </form>
+
+  <div id="msg"></div>
+  <p class="meta"><a href="/">← naar de slideshow</a></p>
+</main>
+<script>
+const form = document.getElementById("form");
+const msg = document.getElementById("msg");
+const fields = ["album_url","slide_seconds","order","image_width","cache_seconds",
+                "poll_seconds","min_show_seconds","priority_new","show_overlay"];
+
+fetch("/api/config").then(r => r.json()).then(cfg => {
+  for (const f of fields) {
+    const el = document.getElementById(f);
+    if (!el) continue;
+    if (el.type === "checkbox") el.checked = !!cfg[f];
+    else el.value = cfg[f] ?? "";
+  }
+});
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const payload = {};
+  for (const f of fields) {
+    const el = document.getElementById(f);
+    if (!el) continue;
+    if (el.type === "checkbox") payload[f] = el.checked;
+    else if (el.type === "number") payload[f] = Number(el.value);
+    else payload[f] = el.value;
+  }
+  const resp = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await resp.json();
+  if (data.ok) {
+    msg.textContent = "Opgeslagen ✓";
+    msg.className = "ok";
+  } else {
+    msg.textContent = "Fout: " + (data.error || "onbekend");
+    msg.className = "err";
+  }
+});
+</script>
+</body>
+</html>

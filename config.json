@@ -1,0 +1,13 @@
+{
+  "album_url": "https://photos.app.goo.gl/es8f3XkUKTk8wAyAA",
+  "port": 11111,
+  "slide_seconds": 6,
+  "order": "oldest",
+  "image_width": 1600,
+  "thumb_width": 480,
+  "cache_seconds": 5,
+  "poll_seconds": 5,
+  "priority_new": true,
+  "min_show_seconds": 1.5,
+  "show_overlay": true
+}
