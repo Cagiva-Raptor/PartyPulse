@@ -39,8 +39,23 @@ Via de web-UI op `/config`, of rechtstreeks in `config.json`:
 | `priority_new` | nieuwe foto's direct als volgende tonen (huidige onderbreken) | `true` |
 | `min_show_seconds` | minimumtijd per foto vóór een onderbreking | `1.5` |
 | `show_overlay` | album-naam, status en ronde-duur tonen | `true` |
+| `title_text` | titelscherm vóór de show (leeg = geen titelscherm; Enter of `\n` = tussenregel) | `""` |
+| `title_seconds` | duur titelscherm (s) | `8` |
+| `ken_burns` | langzame zoom/pan op elke foto | `false` |
+| `end_loop_enabled` | eindlus aan het einde van elke volledige ronde | `false` |
+| `end_film_enabled` | snelle montage van foto's uit sessie (bin. eindlus) | `false` |
+| `end_film_seconds` | seconden per foto in de eindfilm | `1.0` |
+| `top_uploaders_enabled` | Top uploaders-scherm (met namen + avatars) | `true` |
+| `top_uploaders_count` | aantal namen in de top | `10` |
+| `qr_upload_enabled` | QR-scherm om uploaden te bevorderen (gebruikt `/qr.png`) | `false` |
 
 De statusregel toont ook de duur van een volledige ronde (`slide_seconds × aantal foto's`).
+
+**Eindlus** (alleen als `end_loop_enabled` aan staat): na elke volledige ronde —
+eindfilm (indien aan) → Top uploaders → QR (indien aan) — en daarna herstart de ronde.
+
+De QR-afbeelding staat op `static/qr.png` en verwijst naar de ingestelde album-link; het
+scherm valt automatisch terug op een online QR-API als het bestand ontbreekt.
 
 ## systemd
 

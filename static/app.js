@@ -6,27 +6,47 @@ const layers = [layerA, layerB];
 const hint = document.getElementById("hint");
 const statusBox = document.getElementById("status");
 const badge = document.getElementById("badge");
+const screen = document.getElementById("screen");
 
+const FADE_MS = 1200;
+const FAST_FADE_MS = 350;
 const IMG_TIMEOUT_MS = 20000;
 const CONFIG_REFRESH_MS = 15000;
-
-let minShowMs = 1500;
-let interruptResolve = null;
+const TOP_SCREEN_MS = 12000;
+const QR_SCREEN_MS = 15000;
 
 let active = 0;
+let allPhotos = [];
+const known = new Set();
 let normal = [];
 let incoming = [];
-const seen = new Set();
+const newSinceStart = new Set();
+let shownThisRun = 0;
+let firstShown = false;
+
 let slideMs = 6000;
 let pollMs = 5000;
+let minShowMs = 1500;
 let priorityNew = true;
 let showOverlay = true;
+let kenBurns = false;
 let albumTitle = "";
+let albumUrl = "";
 let total = 0;
-let firstShown = false;
+
+let titleText = "";
+let titleSeconds = 8;
+let endLoopEnabled = false;
+let endFilmEnabled = false;
+let endFilmSeconds = 1.0;
+let topUploadersEnabled = true;
+let topUploadersCount = 10;
+let qrUploadEnabled = false;
+
 let statusTimer = null;
 let pollTimer = null;
 let refreshing = false;
+let interruptResolve = null;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -43,11 +63,9 @@ function formatDuration(ms) {
   const sec = ms / 1000;
   if (sec < 60) return Math.round(sec) + " s";
   const min = sec / 60;
-  if (min < 60) {
-    return (Number.isInteger(min) ? min : min.toFixed(1).replace(".", ",")) + " min";
-  }
-  const hours = min / 60;
-  return (Number.isInteger(hours) ? hours : hours.toFixed(1).replace(".", ",")) + " u";
+  if (min < 60) return (Number.isInteger(min) ? min : min.toFixed(1).replace(".", ",")) + " min";
+  const h = min / 60;
+  return (Number.isInteger(h) ? h : h.toFixed(1).replace(".", ",")) + " u";
 }
 
 function refreshStatus() {
@@ -58,9 +76,7 @@ function refreshStatus() {
   const parts = [];
   if (albumTitle) parts.push(albumTitle);
   parts.push(total + " foto's");
-  if (total > 0 && slideMs > 0) {
-    parts.push("ronde \u2248 " + formatDuration(total * slideMs));
-  }
+  if (total > 0 && slideMs > 0) parts.push("ronde \u2248 " + formatDuration(total * slideMs));
   parts.push(incoming.length + normal.length + " in wachtrij");
   setStatus(parts.join("  ·  "), false, false);
   clearTimeout(statusTimer);
@@ -77,90 +93,81 @@ function loadImage(img, src) {
   return new Promise((resolve, reject) => {
     let done = false;
     const timer = setTimeout(() => {
-      if (!done) {
-        done = true;
-        reject(new Error("timeout"));
-      }
+      if (!done) { done = true; reject(new Error("timeout")); }
     }, IMG_TIMEOUT_MS);
-    img.onload = () => {
-      if (!done) {
-        done = true;
-        clearTimeout(timer);
-        resolve();
-      }
-    };
-    img.onerror = () => {
-      if (!done) {
-        done = true;
-        clearTimeout(timer);
-        reject(new Error("laadfout"));
-      }
-    };
+    img.onload = () => { if (!done) { done = true; clearTimeout(timer); resolve(); } };
+    img.onerror = () => { if (!done) { done = true; clearTimeout(timer); reject(new Error("laadfout")); } };
     img.src = src;
-    if (img.complete && img.naturalWidth > 0) {
-      clearTimeout(timer);
-      done = true;
-      resolve();
-    }
+    if (img.complete && img.naturalWidth > 0) { clearTimeout(timer); done = true; resolve(); }
   });
 }
 
 function preloadNext() {
-  const next = incoming.length > 0 ? incoming[0] : normal[0];
-  if (next) {
-    const pre = new Image();
-    pre.src = next.src;
-  }
+  const next = incoming.length ? incoming[0] : normal[0];
+  if (next) { const pre = new Image(); pre.src = next.src; }
 }
 
-async function display(photo) {
-  const cur = layers[active];
-  const next = layers[(active + 1) % 2];
-  try {
-    await loadImage(next, photo.src);
-  } catch (e) {
-    return;
-  }
-  next.classList.add("visible");
-  cur.classList.remove("visible");
-  active = (active + 1) % 2;
-  badge.classList.toggle("show", !!photo.fresh);
-  if (!firstShown) {
-    firstShown = true;
-    hint.classList.add("gone");
-  }
-  await waitSlide(slideMs);
-  badge.classList.remove("show");
+function resetLayer(img) {
+  img.style.transition = "";
+  img.style.transform = "";
+  img.style.transformOrigin = "";
+}
+
+function applyKenBurns(img, totalMs, fadeMs) {
+  const origins = ["0% 0%", "100% 0%", "0% 100%", "100% 100%", "50% 50%"];
+  const o = origins[Math.floor(Math.random() * origins.length)];
+  const zoomIn = Math.random() < 0.5;
+  img.style.transformOrigin = o;
+  img.style.transition = "none";
+  img.style.transform = zoomIn ? "scale(1.0)" : "scale(1.12)";
+  void img.offsetWidth;
+  img.style.transition = `transform ${totalMs}ms linear, opacity ${fadeMs}ms ease-in-out`;
+  img.style.transform = zoomIn ? "scale(1.12)" : "scale(1.0)";
 }
 
 function waitSlide(ms) {
   return new Promise((resolve) => {
     const started = Date.now();
     let timer = null;
-    const done = () => {
-      clearTimeout(timer);
-      interruptResolve = null;
-      resolve();
-    };
+    const done = () => { clearTimeout(timer); interruptResolve = null; resolve(); };
     timer = setTimeout(done, ms);
     interruptResolve = () => {
       const left = minShowMs - (Date.now() - started);
-      if (left <= 0) {
-        done();
-      } else {
-        clearTimeout(timer);
-        timer = setTimeout(done, left);
-      }
+      if (left <= 0) { done(); }
+      else { clearTimeout(timer); timer = setTimeout(done, left); }
     };
   });
 }
 
 function triggerInterrupt() {
-  if (interruptResolve) {
-    const fn = interruptResolve;
-    interruptResolve = null;
-    fn();
+  if (interruptResolve) { const fn = interruptResolve; interruptResolve = null; fn(); }
+}
+
+async function display(photo, opts) {
+  opts = opts || {};
+  const ms = opts.ms != null ? opts.ms : slideMs;
+  const fade = opts.fadeMs != null ? opts.fadeMs : FADE_MS;
+  const useKB = opts.kenBurns != null ? opts.kenBurns : kenBurns;
+  const cur = layers[active];
+  const next = layers[(active + 1) % 2];
+  next.classList.remove("visible");
+  resetLayer(next);
+  try {
+    await loadImage(next, photo.src);
+  } catch (e) {
+    return;
   }
+  if (useKB) applyKenBurns(next, ms + fade, fade);
+  else next.style.transition = `opacity ${fade}ms ease-in-out`;
+  next.classList.add("visible");
+  cur.classList.remove("visible");
+  active = (active + 1) % 2;
+  if (!opts.suppressBadge && photo.fresh) badge.classList.add("show");
+  else badge.classList.remove("show");
+  if (!firstShown) { firstShown = true; hint.classList.add("gone"); }
+  if (opts.interruptible === false) await sleep(ms);
+  else await waitSlide(ms);
+  badge.classList.remove("show");
 }
 
 async function refresh(initial) {
@@ -181,22 +188,20 @@ async function refresh(initial) {
     return 0;
   }
   albumTitle = data.title || albumTitle;
-  total = data.photos.length;
+  allPhotos = data.photos || [];
+  total = allPhotos.length;
   let added = 0;
-  for (const p of data.photos) {
-    if (seen.has(p.id)) continue;
-    seen.add(p.id);
+  for (const p of allPhotos) {
+    if (known.has(p.id)) continue;
+    known.add(p.id);
     if (!initial && priorityNew) {
       p.fresh = true;
       incoming.push(p);
-    } else {
-      normal.push(p);
+      newSinceStart.add(p.id);
     }
     added++;
   }
-  if (incoming.length > 1) {
-    incoming.sort((a, b) => b.ts - a.ts);
-  }
+  if (incoming.length > 1) incoming.sort((a, b) => b.ts - a.ts);
   if (added > 0 && !initial) {
     flashNew(added);
     if (priorityNew) triggerInterrupt();
@@ -204,6 +209,107 @@ async function refresh(initial) {
     refreshStatus();
   }
   return added;
+}
+
+// ---------- schermen ----------
+
+function showScreen(innerHtml, seconds) {
+  screen.innerHTML = innerHtml;
+  screen.classList.add("show");
+  return sleep(seconds * 1000).then(() => {
+    screen.classList.remove("show");
+    return sleep(700);
+  });
+}
+
+function showTitle() {
+  if (!titleText) return Promise.resolve();
+  const markup = escapeHtml(titleText)
+    .replace(/\\n/g, "\n")
+    .replace(/\r?\n/g, "<br>");
+  const html = `<div class="inner"><div class="title-text">${markup}</div></div>`;
+  return showScreen(html, titleSeconds);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function topUploaders() {
+  const counts = new Map();
+  const avatars = new Map();
+  for (const p of allPhotos) {
+    const name = p.uploader || "Onbekend";
+    counts.set(name, (counts.get(name) || 0) + 1);
+    if (p.avatar && !avatars.has(name)) avatars.set(name, p.avatar);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topUploadersCount);
+}
+
+function showTopUploaders() {
+  const list = topUploaders();
+  if (!list.length) return Promise.resolve();
+  const rows = list.map(([name, count], i) => {
+    const img = topAvatarFor(name);
+    return `<li class="${i === 0 ? "first" : ""}">
+      <span class="rank">${i + 1}</span>
+      ${img}
+      <span class="name">${escapeHtml(name)}</span>
+      <span class="count">${count}</span>
+    </li>`;
+  }).join("");
+  const html = `<div class="inner"><h2>Top uploaders vanavond</h2><ol class="toplist">${rows}</ol></div>`;
+  return showScreen(html, TOP_SCREEN_MS / 1000);
+}
+
+function topAvatarFor(name) {
+  for (const p of allPhotos) {
+    if ((p.uploader || "Onbekend") === name && p.avatar) {
+      return `<img src="${escapeHtml(p.avatar)}" alt="">`;
+    }
+  }
+  return "";
+}
+
+function showQR() {
+  const url = albumUrl;
+  const fallback = "https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=16&data=" + encodeURIComponent(url);
+  const html = `<div class="inner qr">
+    <h2>\uD83D\uDCF8 Deel jouw foto's!</h2>
+    <img class="qr-img" src="/qr.png" alt="QR"
+         onerror="this.onerror=null;this.src='${escapeHtml(fallback)}'">
+    <div class="qr-url">${escapeHtml(url)}</div>
+  </div>`;
+  return showScreen(html, QR_SCREEN_MS / 1000);
+}
+
+async function playEndSequence() {
+  if (endFilmEnabled) {
+    const film = allPhotos.filter((p) => newSinceStart.has(p.id));
+    for (const p of film) {
+      await display(p, {
+        ms: endFilmSeconds * 1000,
+        fadeMs: FAST_FADE_MS,
+        kenBurns: false,
+        interruptible: false,
+        suppressBadge: true,
+      });
+    }
+  }
+  if (topUploadersEnabled) await showTopUploaders();
+  if (qrUploadEnabled) await showQR();
+}
+
+async function startRun() {
+  await refresh(true);
+  const incomingIds = new Set(incoming.map((p) => p.id));
+  normal = allPhotos.filter((p) => !incomingIds.has(p.id));
+  shownThisRun = 0;
+  await showTitle();
 }
 
 async function loadConfig() {
@@ -216,14 +322,19 @@ async function loadConfig() {
   if (cfg.slide_seconds) slideMs = Math.max(1, Number(cfg.slide_seconds)) * 1000;
   if (typeof cfg.show_overlay === "boolean") showOverlay = cfg.show_overlay;
   if (typeof cfg.priority_new === "boolean") priorityNew = cfg.priority_new;
-  if (cfg.min_show_seconds) {
-    minShowMs = Math.max(0, Number(cfg.min_show_seconds) * 1000);
-  }
+  if (typeof cfg.ken_burns === "boolean") kenBurns = cfg.ken_burns;
+  if (cfg.min_show_seconds != null) minShowMs = Math.max(0, Number(cfg.min_show_seconds) * 1000);
+  if (typeof cfg.title_text === "string") titleText = cfg.title_text;
+  if (cfg.title_seconds) titleSeconds = Math.max(1, Number(cfg.title_seconds));
+  if (typeof cfg.end_loop_enabled === "boolean") endLoopEnabled = cfg.end_loop_enabled;
+  if (typeof cfg.end_film_enabled === "boolean") endFilmEnabled = cfg.end_film_enabled;
+  if (cfg.end_film_seconds != null) endFilmSeconds = Math.max(0.2, Number(cfg.end_film_seconds));
+  if (typeof cfg.top_uploaders_enabled === "boolean") topUploadersEnabled = cfg.top_uploaders_enabled;
+  if (cfg.top_uploaders_count) topUploadersCount = Math.max(1, Number(cfg.top_uploaders_count));
+  if (typeof cfg.qr_upload_enabled === "boolean") qrUploadEnabled = cfg.qr_upload_enabled;
+  if (typeof cfg.album_url === "string") albumUrl = cfg.album_url;
   const newPoll = Math.max(2, Number(cfg.poll_seconds) || 5) * 1000;
-  if (newPoll !== pollMs) {
-    pollMs = newPoll;
-    startPolling();
-  }
+  if (newPoll !== pollMs) { pollMs = newPoll; startPolling(); }
 }
 
 function startPolling() {
@@ -234,15 +345,24 @@ function startPolling() {
 async function loop() {
   await loadConfig();
   startPolling();
-  await refresh(true);
+  await startRun();
   setInterval(loadConfig, CONFIG_REFRESH_MS);
   while (true) {
-    if (incoming.length === 0 && normal.length === 0) {
-      if (showOverlay) setStatus("wachten op nieuwe foto's\u2026", false, false);
-      await sleep(1000);
+    if (normal.length === 0 && incoming.length === 0) {
+      if (endLoopEnabled) {
+        await playEndSequence();
+        await startRun();
+        continue;
+      }
+      await refresh(false);
+      if (normal.length === 0 && incoming.length === 0) {
+        if (showOverlay) setStatus("wachten op nieuwe foto's\u2026", false, false);
+        await sleep(1000);
+      }
       continue;
     }
-    const photo = incoming.length > 0 ? incoming.shift() : normal.shift();
+    const photo = incoming.length ? incoming.shift() : normal.shift();
+    shownThisRun++;
     preloadNext();
     await display(photo);
   }
@@ -250,9 +370,7 @@ async function loop() {
 
 function goFullscreen() {
   const el = document.documentElement;
-  if (!document.fullscreenElement && el.requestFullscreen) {
-    el.requestFullscreen().catch(() => {});
-  }
+  if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
   hint.classList.add("gone");
 }
 

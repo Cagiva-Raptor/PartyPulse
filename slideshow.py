@@ -43,6 +43,15 @@ DEFAULTS = {
     "priority_new": True,
     "min_show_seconds": 1.5,
     "show_overlay": True,
+    "title_text": "",
+    "title_seconds": 8,
+    "ken_burns": False,
+    "end_loop_enabled": False,
+    "end_film_enabled": False,
+    "end_film_seconds": 1.0,
+    "top_uploaders_enabled": True,
+    "top_uploaders_count": 10,
+    "qr_upload_enabled": False,
 }
 
 UA = (
@@ -153,7 +162,27 @@ def parse_album(html):
     return title, items
 
 
-def build_photos(items, cfg):
+def parse_people(html):
+    """Map contributor-key -> {name, avatar} uit de personenlijst op de pagina."""
+    people = {}
+    for m in re.finditer(r'\["(AF1Qip[A-Za-z0-9_\-]+)","(\d{6,})"', html):
+        key = m.group(1)
+        if key in people:
+            continue
+        window = html[m.end():m.end() + 700]
+        nm = re.search(r'\["([^"]{1,80})",\d+,(?:null|\d+),"[^"]*"\]', window)
+        if not nm:
+            continue
+        avatar = ""
+        av = re.search(r'\["(https://[^"]+)"\]', window[nm.end():])
+        if av:
+            avatar = av.group(1)
+        people[key] = {"name": nm.group(1), "avatar": avatar}
+    return people
+
+
+def build_photos(items, cfg, people=None):
+    people = people or {}
     w = int(cfg.get("image_width") or 1600)
     tw = int(cfg.get("thumb_width") or 480)
     photos = []
@@ -167,12 +196,18 @@ def build_photos(items, cfg):
         if not base:
             continue
         ts = it[2] if isinstance(it[2], int) else 0
+        uploader_key = ""
+        if len(it) > 6 and isinstance(it[6], list) and it[6]:
+            uploader_key = it[6][0]
+        person = people.get(uploader_key, {})
         photos.append(
             {
                 "id": mid,
                 "src": f"{base}=w{w}",
                 "thumb": f"{base}=w{tw}",
                 "ts": ts,
+                "uploader": person.get("name", ""),
+                "avatar": person.get("avatar", ""),
             }
         )
     order = cfg.get("order") or "oldest"
@@ -204,7 +239,8 @@ def get_album(force=False):
     try:
         html = fetch_html(url)
         title, items = parse_album(html)
-        photos = build_photos(items, cfg)
+        people = parse_people(html)
+        photos = build_photos(items, cfg, people)
         if not photos:
             raise ValueError("geen foto's gevonden in het album")
         result = {"title": title, "photos": photos, "error": None}
@@ -270,6 +306,13 @@ class Handler(BaseHTTPRequestHandler):
             ".html": "text/html; charset=utf-8",
             ".js": "application/javascript; charset=utf-8",
             ".css": "text/css; charset=utf-8",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+            ".ico": "image/x-icon",
         }.get(ext, "application/octet-stream")
         with open(path, "rb") as fh:
             body = fh.read()
@@ -321,6 +364,10 @@ class Handler(BaseHTTPRequestHandler):
             "album_url", "slide_seconds", "order", "image_width",
             "thumb_width", "cache_seconds", "poll_seconds",
             "priority_new", "min_show_seconds", "show_overlay",
+            "title_text", "title_seconds", "ken_burns",
+            "end_loop_enabled", "end_film_enabled", "end_film_seconds",
+            "top_uploaders_enabled", "top_uploaders_count",
+            "qr_upload_enabled",
         }
         updates = {k: v for k, v in payload.items() if k in allowed}
         if "slide_seconds" in updates:
@@ -329,6 +376,12 @@ class Handler(BaseHTTPRequestHandler):
             updates["poll_seconds"] = max(2, int(updates["poll_seconds"]))
         if "cache_seconds" in updates:
             updates["cache_seconds"] = max(0, int(updates["cache_seconds"]))
+        if "title_seconds" in updates:
+            updates["title_seconds"] = max(1, int(updates["title_seconds"]))
+        if "end_film_seconds" in updates:
+            updates["end_film_seconds"] = max(0.2, float(updates["end_film_seconds"]))
+        if "top_uploaders_count" in updates:
+            updates["top_uploaders_count"] = max(1, int(updates["top_uploaders_count"]))
         save_config(updates)
         with _cache_lock:
             _cache["key"] = None
