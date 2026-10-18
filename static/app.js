@@ -1,5 +1,7 @@
 "use strict";
 
+const API_BASE = location.origin;
+
 const layerA = document.getElementById("layerA");
 const layerB = document.getElementById("layerB");
 const layers = [layerA, layerB];
@@ -42,6 +44,10 @@ let endFilmSeconds = 1.0;
 let topUploadersEnabled = true;
 let topUploadersCount = 10;
 let qrUploadEnabled = false;
+let qrCornerEnabled = false;
+let qrCornerPos = "tr";
+let paused = false;
+let resetFlag = false;
 
 let statusTimer = null;
 let pollTimer = null;
@@ -50,6 +56,22 @@ let interruptResolve = null;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function sleepP(ms) {
+  return new Promise((resolve) => {
+    let left = ms;
+    let last = Date.now();
+    const tick = () => {
+      if (resetFlag) { resolve(); return; }
+      const now = Date.now();
+      if (!paused) left -= now - last;
+      last = now;
+      if (left <= 0) resolve();
+      else setTimeout(tick, Math.min(left, 250));
+    };
+    setTimeout(tick, Math.min(left, 250));
+  });
 }
 
 function setStatus(text, isError, flash) {
@@ -73,6 +95,11 @@ function refreshStatus() {
     statusBox.classList.add("hidden");
     return;
   }
+  if (paused) {
+    setStatus("\u23F8 PAUZE \u00B7 druk op p om te hervatten", false, false);
+    clearTimeout(statusTimer);
+    return;
+  }
   const parts = [];
   if (albumTitle) parts.push(albumTitle);
   parts.push(total + " foto's");
@@ -84,6 +111,7 @@ function refreshStatus() {
 }
 
 function flashNew(count) {
+  if (paused) return;
   setStatus("\uD83C\uDF89 " + count + " nieuwe foto" + (count > 1 ? "'s" : "") + "!", false, true);
   clearTimeout(statusTimer);
   statusTimer = setTimeout(refreshStatus, 6000);
@@ -127,19 +155,30 @@ function applyKenBurns(img, totalMs, fadeMs) {
 
 function waitSlide(ms) {
   return new Promise((resolve) => {
-    const started = Date.now();
+    let left = ms;
+    let last = Date.now();
     let timer = null;
     const done = () => { clearTimeout(timer); interruptResolve = null; resolve(); };
-    timer = setTimeout(done, ms);
+    const tick = () => {
+      if (resetFlag) { done(); return; }
+      const now = Date.now();
+      if (!paused) left -= now - last;
+      last = now;
+      if (left <= 0) { done(); return; }
+      timer = setTimeout(tick, Math.min(left, 250));
+    };
+    timer = setTimeout(tick, Math.min(left, 250));
     interruptResolve = () => {
-      const left = minShowMs - (Date.now() - started);
-      if (left <= 0) { done(); }
-      else { clearTimeout(timer); timer = setTimeout(done, left); }
+      const elapsed = ms - left;
+      const rem = minShowMs - elapsed;
+      if (rem <= 0) { done(); }
+      else { left = Math.min(left, rem); }
     };
   });
 }
 
 function triggerInterrupt() {
+  if (paused) return;
   if (interruptResolve) { const fn = interruptResolve; interruptResolve = null; fn(); }
 }
 
@@ -165,7 +204,7 @@ async function display(photo, opts) {
   if (!opts.suppressBadge && photo.fresh) badge.classList.add("show");
   else badge.classList.remove("show");
   if (!firstShown) { firstShown = true; hint.classList.add("gone"); }
-  if (opts.interruptible === false) await sleep(ms);
+  if (opts.interruptible === false) await sleepP(ms);
   else await waitSlide(ms);
   badge.classList.remove("show");
 }
@@ -175,7 +214,7 @@ async function refresh(initial) {
   refreshing = true;
   let data;
   try {
-    const url = initial ? "/api/photos?fresh=1" : "/api/photos";
+    const url = API_BASE + (initial ? "/api/photos?fresh=1" : "/api/photos");
     data = await (await fetch(url, { cache: "no-store" })).json();
   } catch (e) {
     setStatus("verbinding met server mislukt: " + e.message, true, false);
@@ -213,12 +252,15 @@ async function refresh(initial) {
 
 // ---------- schermen ----------
 
+let screenToken = 0;
+
 function showScreen(innerHtml, seconds) {
+  const my = ++screenToken;
   screen.innerHTML = innerHtml;
   screen.classList.add("show");
-  return sleep(seconds * 1000).then(() => {
-    screen.classList.remove("show");
-    return sleep(700);
+  return sleepP(seconds * 1000).then(() => {
+    if (my === screenToken) screen.classList.remove("show");
+    return sleepP(700);
   });
 }
 
@@ -291,6 +333,7 @@ async function playEndSequence() {
   if (endFilmEnabled) {
     const film = allPhotos.filter((p) => newSinceStart.has(p.id));
     for (const p of film) {
+      if (resetFlag) return;
       await display(p, {
         ms: endFilmSeconds * 1000,
         fadeMs: FAST_FADE_MS,
@@ -300,7 +343,9 @@ async function playEndSequence() {
       });
     }
   }
+  if (resetFlag) return;
   if (topUploadersEnabled) await showTopUploaders();
+  if (resetFlag) return;
   if (qrUploadEnabled) await showQR();
 }
 
@@ -315,7 +360,7 @@ async function startRun() {
 async function loadConfig() {
   let cfg;
   try {
-    cfg = await (await fetch("/api/config", { cache: "no-store" })).json();
+    cfg = await (await fetch(API_BASE + "/api/config", { cache: "no-store" })).json();
   } catch (e) {
     return;
   }
@@ -332,9 +377,28 @@ async function loadConfig() {
   if (typeof cfg.top_uploaders_enabled === "boolean") topUploadersEnabled = cfg.top_uploaders_enabled;
   if (cfg.top_uploaders_count) topUploadersCount = Math.max(1, Number(cfg.top_uploaders_count));
   if (typeof cfg.qr_upload_enabled === "boolean") qrUploadEnabled = cfg.qr_upload_enabled;
+  if (typeof cfg.qr_corner_enabled === "boolean") qrCornerEnabled = cfg.qr_corner_enabled;
+  if (typeof cfg.qr_corner_pos === "string" && ["tl", "tr", "bl", "br"].includes(cfg.qr_corner_pos)) {
+    qrCornerPos = cfg.qr_corner_pos;
+  }
   if (typeof cfg.album_url === "string") albumUrl = cfg.album_url;
+  applyCornerQr();
   const newPoll = Math.max(2, Number(cfg.poll_seconds) || 5) * 1000;
   if (newPoll !== pollMs) { pollMs = newPoll; startPolling(); }
+}
+
+function applyCornerQr() {
+  const el = document.getElementById("cornerQr");
+  document.body.classList.remove("qr-tl", "qr-tr", "qr-bl", "qr-br");
+  if (!qrCornerEnabled) { el.hidden = true; return; }
+  if (!el.src) {
+    const fallback = "https://api.qrserver.com/v1/create-qr-code/?size=400x400&margin=8&data=" + encodeURIComponent(albumUrl);
+    el.src = "/qr.png";
+    el.onerror = () => { el.onerror = null; el.src = fallback; };
+  }
+  el.className = "pos-" + qrCornerPos;
+  el.hidden = false;
+  document.body.classList.add("qr-" + qrCornerPos);
 }
 
 function startPolling() {
@@ -348,16 +412,32 @@ async function loop() {
   await startRun();
   setInterval(loadConfig, CONFIG_REFRESH_MS);
   while (true) {
+    if (resetFlag) {
+      resetFlag = false;
+      paused = false;
+      known.clear();
+      newSinceStart.clear();
+      incoming = [];
+      normal = [];
+      shownThisRun = 0;
+      firstShown = false;
+      badge.classList.remove("show");
+      await startRun();
+      continue;
+    }
+    while (paused && !resetFlag) await sleep(100);
+    if (resetFlag) continue;
     if (normal.length === 0 && incoming.length === 0) {
       if (endLoopEnabled) {
         await playEndSequence();
+        if (resetFlag) continue;
         await startRun();
         continue;
       }
       await refresh(false);
       if (normal.length === 0 && incoming.length === 0) {
-        if (showOverlay) setStatus("wachten op nieuwe foto's\u2026", false, false);
-        await sleep(1000);
+        if (showOverlay && !paused) setStatus("wachten op nieuwe foto's\u2026", false, false);
+        await sleepP(1000);
       }
       continue;
     }
@@ -374,13 +454,43 @@ function goFullscreen() {
   hint.classList.add("gone");
 }
 
+const helpBox = document.getElementById("help");
+
+function toggleHelp() {
+  helpBox.hidden = !helpBox.hidden;
+}
+
+function togglePause() {
+  paused = !paused;
+  clearTimeout(statusTimer);
+  refreshStatus();
+}
+
 document.addEventListener("click", goFullscreen);
+helpBox.addEventListener("click", (e) => { e.stopPropagation(); toggleHelp(); });
 document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const key = (e.key || "").toLowerCase();
+  if (key === "escape") {
+    if (!helpBox.hidden) toggleHelp();
+    return;
+  }
+  if (key.length !== 1) return;
   goFullscreen();
-  if (e.key === "i") {
+  if (key === "i") {
     showOverlay = !showOverlay;
     refreshStatus();
     if (!showOverlay) statusBox.classList.add("hidden");
+  } else if (key === "h") {
+    toggleHelp();
+  } else if (key === "p") {
+    togglePause();
+  } else if (key === "r") {
+    resetFlag = true;
+  } else if (key === "c") {
+    window.open(API_BASE + "/config", "_blank");
+  } else if (key === "s") {
+    showQR();
   }
 });
 

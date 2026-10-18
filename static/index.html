@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Righteous&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/style.css?v=3">
 </head>
 <body>
   <div id="stage">
@@ -16,8 +16,25 @@
   </div>
   <div id="badge">NIEUW</div>
   <div id="screen"></div>
+  <img id="cornerQr" alt="QR" hidden>
+  <div id="help" hidden>
+    <div class="help-inner">
+      <h2>Sneltoetsen</h2>
+      <table>
+        <tr><td><kbd>c</kbd></td><td>Config openen</td></tr>
+        <tr><td><kbd>p</kbd></td><td>Pauze / spelen</td></tr>
+        <tr><td><kbd>h</kbd></td><td>Help (deze lijst)</td></tr>
+        <tr><td><kbd>r</kbd></td><td>Opnieuw starten</td></tr>
+        <tr><td><kbd>s</kbd></td><td>Deel-QR tonen</td></tr>
+        <tr><td><kbd>i</kbd></td><td>Info-overlay tonen/verbergen</td></tr>
+        <tr><td><kbd>f</kbd></td><td>Volledig scherm</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Sluiten</td></tr>
+      </table>
+      <p>Druk op <kbd>h</kbd> om te sluiten.</p>
+    </div>
+  </div>
   <div id="hint">Klik of druk een toets voor volledig scherm</div>
   <div id="status"></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=3"></script>
 </body>
 </html>

@@ -204,3 +204,90 @@ html, body {
   margin-top: 3vh;
   word-break: break-all;
 }
+
+/* Kleine QR in de hoek */
+#cornerQr {
+  position: fixed;
+  width: clamp(96px, 14vh, 170px);
+  height: clamp(96px, 14vh, 170px);
+  background: #fff;
+  border-radius: 12px;
+  padding: 8px;
+  box-sizing: border-box;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+  z-index: 5;
+}
+
+#cornerQr[hidden] { display: none; }
+#cornerQr.pos-tl { top: 18px; left: 18px; }
+#cornerQr.pos-tr { top: 18px; right: 18px; }
+#cornerQr.pos-bl { bottom: 18px; left: 18px; }
+#cornerQr.pos-br { bottom: 18px; right: 18px; }
+
+/* Badge/status vermijden als de QR in dezelfde hoek staat */
+body.qr-tl #status { top: auto; bottom: 18px; }
+body.qr-tr #badge { right: calc(clamp(96px, 14vh, 170px) + 36px); }
+body.qr-bl #hint { bottom: auto; top: 6vh; }
+body.qr-br #hint { bottom: auto; top: 6vh; }
+
+/* Help-overlay met sneltoetsen */
+#help {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.78);
+  z-index: 20;
+}
+
+#help[hidden] { display: none; }
+
+#help .help-inner {
+  background: #16161f;
+  border: 1px solid #33334a;
+  border-radius: 16px;
+  padding: 4vh 5vw;
+  color: #eee;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  text-align: center;
+  max-width: 90vw;
+}
+
+#help h2 {
+  margin: 0 0 3vh;
+  font-family: "Righteous", system-ui, sans-serif;
+  letter-spacing: 1px;
+  color: #ffd76e;
+}
+
+#help table {
+  border-collapse: collapse;
+  margin: 0 auto;
+  font-size: clamp(16px, 2.2vw, 24px);
+}
+
+#help td {
+  padding: 8px 14px;
+  text-align: left;
+}
+
+#help kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 3px 10px;
+  border-radius: 8px;
+  background: #2a2a3d;
+  border: 1px solid #4a4a66;
+  border-bottom-width: 3px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-weight: 700;
+  color: #9fd0ff;
+  text-align: center;
+}
+
+#help p {
+  margin: 3vh 0 0;
+  color: #999;
+  font-size: clamp(13px, 1.6vw, 17px);
+}

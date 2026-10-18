@@ -17,12 +17,13 @@ import hmac
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("PARTYPULSE_CONFIG") or os.path.join(BASE_DIR, "config.json")
@@ -43,7 +44,7 @@ DEFAULTS = {
     "priority_new": True,
     "min_show_seconds": 1.5,
     "show_overlay": True,
-    "title_text": "",
+    "title_text": "PartyPulse",
     "title_seconds": 8,
     "ken_burns": False,
     "end_loop_enabled": False,
@@ -52,6 +53,8 @@ DEFAULTS = {
     "top_uploaders_enabled": True,
     "top_uploaders_count": 10,
     "qr_upload_enabled": False,
+    "qr_corner_enabled": False,
+    "qr_corner_pos": "tr",
 }
 
 UA = (
@@ -91,6 +94,13 @@ def load_users():
         return {}
     users = data.get("users") if isinstance(data, dict) else None
     return users if isinstance(users, dict) else {}
+
+
+def save_users(users):
+    with open(AUTH_PATH, "w", encoding="utf-8") as fh:
+        json.dump({"users": users}, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.chmod(AUTH_PATH, 0o600)
 
 
 def make_user_record(password, salt=None):
@@ -258,6 +268,18 @@ def get_album(force=False):
     return result
 
 
+def _own_unit():
+    """Naam van de systemd-unit waarin deze process draait (zo niet: leeg)."""
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as fh:
+            for line in fh:
+                if ".service" in line:
+                    return line.strip().rsplit("/", 1)[-1]
+    except OSError:
+        pass
+    return ""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "gphotos-slideshow"
 
@@ -334,6 +356,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(data)
         elif parsed.path == "/api/config":
             self._send_json(load_config())
+        elif parsed.path == "/api/users":
+            self._send_json({"users": sorted(load_users().keys())})
         elif parsed.path in ("/", "/index.html"):
             self._send_file(os.path.join(STATIC_DIR, "index.html"))
         elif parsed.path == "/config":
@@ -350,6 +374,56 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_auth():
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/api/restart":
+            unit = _own_unit()
+            if not unit:
+                self._send_json(
+                    {"ok": False, "error": "niet onder systemd draaiend"}
+                )
+                return
+            self._send_json({"ok": True, "unit": unit})
+
+            def _restart():
+                time.sleep(0.5)
+                subprocess.run(
+                    ["systemctl", "restart", unit],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            threading.Thread(target=_restart, daemon=True).start()
+            return
+        if parsed.path == "/api/users":
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except ValueError:
+                self._send_json({"ok": False, "error": "ongeldige JSON"}, code=400)
+                return
+            name = str(payload.get("name") or "").strip()
+            password = str(payload.get("password") or "")
+            if not name or len(name) > 64:
+                self._send_json(
+                    {"ok": False, "error": "naam moet 1-64 tekens zijn"}, code=400
+                )
+                return
+            if ":" in name:
+                self._send_json(
+                    {"ok": False, "error": "naam mag geen ':' bevatten"}, code=400
+                )
+                return
+            if not password:
+                self._send_json(
+                    {"ok": False, "error": "wachtwoord mag niet leeg zijn"}, code=400
+                )
+                return
+            users = load_users()
+            users[name] = make_user_record(password)
+            save_users(users)
+            self._send_json({"ok": True, "users": sorted(users.keys())})
+            return
         if parsed.path != "/api/config":
             self.send_error(404, "not found")
             return
@@ -367,9 +441,12 @@ class Handler(BaseHTTPRequestHandler):
             "title_text", "title_seconds", "ken_burns",
             "end_loop_enabled", "end_film_enabled", "end_film_seconds",
             "top_uploaders_enabled", "top_uploaders_count",
-            "qr_upload_enabled",
+            "qr_upload_enabled", "qr_corner_enabled", "qr_corner_pos",
         }
         updates = {k: v for k, v in payload.items() if k in allowed}
+        if "qr_corner_pos" in updates:
+            pos = str(updates["qr_corner_pos"])
+            updates["qr_corner_pos"] = pos if pos in ("tl", "tr", "bl", "br") else "tr"
         if "slide_seconds" in updates:
             updates["slide_seconds"] = max(1, int(updates["slide_seconds"]))
         if "poll_seconds" in updates:
@@ -386,6 +463,37 @@ class Handler(BaseHTTPRequestHandler):
         with _cache_lock:
             _cache["key"] = None
         self._send_json({"ok": True, "config": load_config()})
+
+    def do_DELETE(self):
+        if not self._require_auth():
+            return
+        parsed = urlparse(self.path)
+        m = re.fullmatch(r"/api/users/(.+)", parsed.path)
+        if not m:
+            self.send_error(404, "not found")
+            return
+        name = unquote(m.group(1))
+        users = load_users()
+        if name not in users:
+            self._send_json(
+                {"ok": False, "error": "onbekende gebruiker"}, code=404
+            )
+            return
+        if name == "admin":
+            self._send_json(
+                {"ok": False, "error": "admin kan niet worden verwijderd"},
+                code=400,
+            )
+            return
+        if len(users) <= 1:
+            self._send_json(
+                {"ok": False, "error": "kan niet de laatste gebruiker verwijderen"},
+                code=400,
+            )
+            return
+        del users[name]
+        save_users(users)
+        self._send_json({"ok": True, "users": sorted(users.keys())})
 
 
 def main():
