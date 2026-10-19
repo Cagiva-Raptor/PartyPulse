@@ -48,6 +48,7 @@ let qrCornerEnabled = false;
 let qrCornerPos = "tr";
 let paused = false;
 let resetFlag = false;
+let stopped = false;
 
 let statusTimer = null;
 let pollTimer = null;
@@ -63,7 +64,7 @@ function sleepP(ms) {
     let left = ms;
     let last = Date.now();
     const tick = () => {
-      if (resetFlag) { resolve(); return; }
+      if (resetFlag || stopped) { resolve(); return; }
       const now = Date.now();
       if (!paused) left -= now - last;
       last = now;
@@ -160,7 +161,7 @@ function waitSlide(ms) {
     let timer = null;
     const done = () => { clearTimeout(timer); interruptResolve = null; resolve(); };
     const tick = () => {
-      if (resetFlag) { done(); return; }
+      if (resetFlag || stopped) { done(); return; }
       const now = Date.now();
       if (!paused) left -= now - last;
       last = now;
@@ -196,6 +197,7 @@ async function display(photo, opts) {
   } catch (e) {
     return;
   }
+  if (stopped) return;
   if (useKB) applyKenBurns(next, ms + fade, fade);
   else next.style.transition = `opacity ${fade}ms ease-in-out`;
   next.classList.add("visible");
@@ -222,6 +224,10 @@ async function refresh(initial) {
     return 0;
   }
   refreshing = false;
+  if (data.stopped) {
+    if (!stopped) { stopped = true; showStopped(); }
+    return 0;
+  }
   if (data.error) {
     setStatus("album-fout: " + data.error, true, false);
     return 0;
@@ -262,6 +268,42 @@ function showScreen(innerHtml, seconds) {
     if (my === screenToken) screen.classList.remove("show");
     return sleepP(700);
   });
+}
+
+function showStopped() {
+  ++screenToken;
+  layers[0].classList.remove("visible");
+  layers[1].classList.remove("visible");
+  badge.classList.remove("show");
+  statusBox.classList.add("hidden");
+  hint.classList.add("gone");
+  document.getElementById("help").hidden = true;
+  document.getElementById("cornerQr").hidden = true;
+  document.body.classList.remove("qr-tl", "qr-tr", "qr-bl", "qr-br");
+  screen.classList.add("stopped");
+  screen.innerHTML = `<div class="stopped-float">
+    <div>PartyPulse niet actief.</div>
+    <div class="stopped-sub">Druk op [ App starten ] in de config</div>
+  </div>`;
+  screen.classList.add("show");
+}
+
+async function checkStatus() {
+  try {
+    const st = await (await fetch(API_BASE + "/api/status", { cache: "no-store" })).json();
+    if (st.stopped && !stopped) {
+      stopped = true;
+      showStopped();
+    } else if (!st.stopped && stopped) {
+      stopped = false;
+      resetFlag = true;
+      screen.classList.remove("stopped", "show");
+      screen.innerHTML = "";
+      applyCornerQr();
+    }
+  } catch (e) {
+    /* server even niet bereikbaar */
+  }
 }
 
 function showTitle() {
@@ -318,6 +360,7 @@ function topAvatarFor(name) {
 }
 
 function showQR() {
+  if (stopped) return Promise.resolve();
   const url = albumUrl;
   const fallback = "https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=16&data=" + encodeURIComponent(url);
   const html = `<div class="inner qr">
@@ -390,7 +433,7 @@ async function loadConfig() {
 function applyCornerQr() {
   const el = document.getElementById("cornerQr");
   document.body.classList.remove("qr-tl", "qr-tr", "qr-bl", "qr-br");
-  if (!qrCornerEnabled) { el.hidden = true; return; }
+  if (stopped || !qrCornerEnabled) { el.hidden = true; return; }
   if (!el.src) {
     const fallback = "https://api.qrserver.com/v1/create-qr-code/?size=400x400&margin=8&data=" + encodeURIComponent(albumUrl);
     el.src = "/qr.png";
@@ -408,8 +451,10 @@ function startPolling() {
 
 async function loop() {
   await loadConfig();
+  await checkStatus();
   startPolling();
-  await startRun();
+  setInterval(checkStatus, 2000);
+  if (!stopped) await startRun();
   setInterval(loadConfig, CONFIG_REFRESH_MS);
   while (true) {
     if (resetFlag) {
@@ -425,6 +470,8 @@ async function loop() {
       await startRun();
       continue;
     }
+    while (stopped && !resetFlag) await sleep(200);
+    if (resetFlag) continue;
     while (paused && !resetFlag) await sleep(100);
     if (resetFlag) continue;
     if (normal.length === 0 && incoming.length === 0) {

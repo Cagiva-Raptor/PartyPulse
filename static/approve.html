@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Foto's goedkeuren</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #101014; color: #eee;
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { position: sticky; top: 0; z-index: 10; background: #17171f;
+           border-bottom: 1px solid #2a2a38; padding: 12px 16px; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  .meta { color: #9a9aa8; font-size: 13px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+  select, button { padding: 9px 14px; border: 0; border-radius: 8px;
+                   font-size: 14px; cursor: pointer; background: #2b2b3a; color: #eee; }
+  button:hover { background: #3a3a4d; }
+  button.good { background: #15803d; color: #fff; }
+  button.good:hover { background: #166534; }
+  button.bad { background: #b91c1c; color: #fff; }
+  button.bad:hover { background: #991b1b; }
+  select { background: #2b2b3a; }
+  .banner { margin: 12px 16px; padding: 10px 14px; border-radius: 10px;
+            background: #4a3a12; border: 1px solid #7a6220; color: #ffe08a; }
+  .grid { display: grid; gap: 8px; padding: 12px 16px 120px;
+          grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+  .tile { position: relative; aspect-ratio: 1 / 1; border-radius: 10px;
+          overflow: hidden; background: #000; border: 2px solid transparent;
+          cursor: pointer; }
+  .tile.selected { border-color: #3b82f6; }
+  .tile img { width: 100%; height: 100%; object-fit: cover; display: block;
+              user-select: none; -webkit-user-drag: none; }
+  .tile .badge { position: absolute; top: 6px; left: 6px; padding: 2px 8px;
+                 border-radius: 999px; font-size: 11px; font-weight: 700;
+                 letter-spacing: .4px; }
+  .badge.approved { background: #15803d; color: #fff; }
+  .badge.rejected { background: #b91c1c; color: #fff; }
+  .badge.pending  { background: #b45309; color: #fff; }
+  .tile .pick { position: absolute; top: 6px; right: 6px; padding: 4px;
+                background: rgba(0,0,0,.55); border-radius: 8px; display: flex; }
+  .tile .pick input { width: 22px; height: 22px; margin: 0; }
+  .tile .who { position: absolute; bottom: 0; left: 0; right: 0;
+               padding: 4px 8px; font-size: 11px; color: #eee;
+               background: linear-gradient(transparent, rgba(0,0,0,.8));
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .actions { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+             display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px;
+             background: #17171f; border-top: 1px solid #2a2a38; }
+  .empty { text-align: center; color: #888; padding: 40px 16px; }
+  footer { padding: 12px 16px; }
+  a { color: #7db8ff; }
+
+  /* Volledige-scherm swipe-viewer */
+  #viewer { position: fixed; inset: 0; z-index: 50; background: #000;
+            display: flex; flex-direction: column; }
+  #viewer[hidden] { display: none; }
+  .card { position: relative; flex: 1; display: flex; align-items: center;
+          justify-content: center; overflow: hidden; touch-action: none;
+          will-change: transform, opacity; }
+  .card img { max-width: 96vw; max-height: 78vh; object-fit: contain;
+              pointer-events: none; user-select: none; -webkit-user-drag: none; }
+  .stamp { position: absolute; top: 12%; font-size: clamp(28px, 6vw, 64px);
+           font-weight: 800; letter-spacing: 3px; padding: 8px 20px;
+           border-radius: 12px; border: 5px solid; opacity: 0;
+           pointer-events: none; }
+  .stamp.approve { color: #4ade80; border-color: #4ade80; transform: rotate(-14deg); }
+  .stamp.reject  { color: #f87171; border-color: #f87171; transform: rotate(14deg); }
+  .vbar { display: flex; align-items: center; justify-content: center; gap: 18px;
+          padding: 14px; background: #000; }
+  .vbar span { color: #aaa; font: 13px ui-monospace, Menlo, monospace; }
+  .vhint { text-align: center; color: #777; font-size: 12px; padding: 0 0 14px; }
+  .close { position: absolute; top: 10px; right: 12px; z-index: 2;
+           background: rgba(40,40,50,.85); border-radius: 50%; width: 42px;
+           height: 42px; font-size: 20px; line-height: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Foto's goedkeuren</h1>
+  <div class="meta" id="whoami"></div>
+  <div class="row">
+    <select id="filter">
+      <option value="pending">Te keuren</option>
+      <option value="all">Alle foto's</option>
+      <option value="approved">Goedgekeurd</option>
+      <option value="rejected">Afgekeurd</option>
+    </select>
+    <button type="button" id="selectAllBtn">Alles selecteren</button>
+    <button type="button" id="clearSelBtn">Selectie wissen</button>
+    <span class="meta" id="counts"></span>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden>
+  Goedkeuring staat uit — alle foto's verschijnen in de slideshow. Zet dit aan in de config.
+</div>
+<div id="grid" class="grid"></div>
+<div id="empty" class="empty" hidden>Geen foto's in deze selectie.</div>
+
+<div class="actions">
+  <button type="button" id="approveSel" class="good">Selectie goedkeuren</button>
+  <button type="button" id="rejectSel" class="bad">Selectie afkeuren</button>
+  <button type="button" id="approveAll" class="good">Alles goedkeuren</button>
+  <button type="button" id="rejectAll" class="bad">Alles afkeuren</button>
+</div>
+
+<footer class="meta">
+  <a href="/config">← naar de config</a> · <a href="/">naar de slideshow</a>
+</footer>
+
+<div id="viewer" hidden>
+  <button type="button" class="close" id="vClose">✕</button>
+  <div class="card" id="card">
+    <img id="vimg" alt="">
+    <div class="stamp approve" id="stampApprove">GOEDGEKEURD</div>
+    <div class="stamp reject" id="stampReject">AFGEKEURD</div>
+  </div>
+  <div class="vbar">
+    <button type="button" class="bad" id="vReject">◀ Afkeuren</button>
+    <span id="vCount"></span>
+    <button type="button" class="good" id="vApprove">Goedkeuren ▶</button>
+  </div>
+  <div class="vhint">Sleep naar rechts = goedkeuren · naar links = afkeuren</div>
+</div>
+
+<script>
+const grid = document.getElementById("grid");
+const empty = document.getElementById("empty");
+const counts = document.getElementById("counts");
+const filterSel = document.getElementById("filter");
+const whoami = document.getElementById("whoami");
+
+let allPhotos = [];
+let sel = new Set();
+let requireApproval = false;
+
+const LABEL = { approved: "Goedgekeurd", rejected: "Afgekeurd", pending: "Te keuren" };
+
+function filtered() {
+  const f = filterSel.value;
+  if (f === "all") return allPhotos;
+  return allPhotos.filter((p) => p.state === f);
+}
+
+function countStates() {
+  const c = { approved: 0, rejected: 0, pending: 0 };
+  for (const p of allPhotos) c[p.state] = (c[p.state] || 0) + 1;
+  counts.textContent =
+    "Te keuren: " + c.pending + "  ·  goedgekeurd: " + c.approved +
+    "  ·  afgekeurd: " + c.rejected;
+}
+
+function render() {
+  const list = filtered();
+  grid.innerHTML = "";
+  empty.hidden = list.length > 0;
+  for (const p of list) {
+    const tile = document.createElement("div");
+    tile.className = "tile" + (sel.has(p.id) ? " selected" : "");
+
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.src = p.thumb || p.src;
+    img.alt = "";
+    tile.appendChild(img);
+
+    const badge = document.createElement("span");
+    badge.className = "badge " + p.state;
+    badge.textContent = LABEL[p.state] || p.state;
+    tile.appendChild(badge);
+
+    const pick = document.createElement("label");
+    pick.className = "pick";
+    const chk = document.createElement("input");
+    chk.type = "checkbox";
+    chk.checked = sel.has(p.id);
+    chk.addEventListener("click", (e) => e.stopPropagation());
+    chk.addEventListener("change", () => {
+      if (chk.checked) sel.add(p.id); else sel.delete(p.id);
+      tile.classList.toggle("selected", chk.checked);
+    });
+    pick.appendChild(chk);
+    tile.appendChild(pick);
+
+    if (p.uploader) {
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = p.uploader;
+      tile.appendChild(who);
+    }
+
+    tile.addEventListener("click", () => openViewer(p.id));
+    grid.appendChild(tile);
+  }
+  countStates();
+}
+
+async function load(fresh) {
+  try {
+    const url = "/api/approval/photos" + (fresh ? "?fresh=1" : "");
+    const resp = await fetch(url, { cache: "no-store" });
+    if (resp.status === 403) {
+      document.body.innerHTML = "<p style='padding:24px'>Geen rechten om foto's goed te keuren.</p>";
+      return;
+    }
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "onbekend");
+    allPhotos = data.photos || [];
+    requireApproval = !!data.require_approval;
+    document.getElementById("banner").hidden = requireApproval;
+    sel = new Set([...sel].filter((id) => allPhotos.some((p) => p.id === id)));
+    render();
+  } catch (e) {
+    counts.textContent = "Fout bij laden: " + e.message;
+  }
+}
+
+async function act(ids, action) {
+  if (!ids.length) return;
+  try {
+    const resp = await fetch("/api/approval", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, action }),
+    });
+    const d = await resp.json();
+    if (!d.ok) throw new Error(d.error || "onbekend");
+    const state = action === "approve" ? "approved" : "rejected";
+    const set = new Set(ids.map(String));
+    for (const p of allPhotos) if (set.has(String(p.id))) p.state = state;
+    for (const id of ids) sel.delete(id);
+    render();
+  } catch (e) {
+    alert("Fout: " + e.message);
+  }
+}
+
+document.getElementById("filter").addEventListener("change", render);
+document.getElementById("selectAllBtn").addEventListener("click", () => {
+  for (const p of filtered()) sel.add(p.id);
+  render();
+});
+document.getElementById("clearSelBtn").addEventListener("click", () => {
+  sel.clear();
+  render();
+});
+document.getElementById("approveSel").addEventListener("click", () => act([...sel], "approve"));
+document.getElementById("rejectSel").addEventListener("click", () => act([...sel], "reject"));
+document.getElementById("approveAll").addEventListener("click", () => {
+  const ids = filtered().map((p) => p.id);
+  if (ids.length && confirm("Alle " + ids.length + " foto's in deze selectie goedkeuren?")) {
+    act(ids, "approve");
+  }
+});
+document.getElementById("rejectAll").addEventListener("click", () => {
+  const ids = filtered().map((p) => p.id);
+  if (ids.length && confirm("Alle " + ids.length + " foto's in deze selectie afkeuren?")) {
+    act(ids, "reject");
+  }
+});
+
+// ---------- swipe-viewer ----------
+const viewer = document.getElementById("viewer");
+const card = document.getElementById("card");
+const vimg = document.getElementById("vimg");
+const vCount = document.getElementById("vCount");
+const stampApprove = document.getElementById("stampApprove");
+const stampReject = document.getElementById("stampReject");
+
+let vlist = [];
+let vidx = 0;
+let dragging = false;
+let startX = 0;
+let dx = 0;
+let busy = false;
+
+function openViewer(id) {
+  vlist = filtered();
+  vidx = vlist.findIndex((p) => p.id === id);
+  if (vidx < 0) vidx = 0;
+  if (!vlist.length) return;
+  viewer.hidden = false;
+  showPhoto();
+}
+
+function closeViewer() {
+  viewer.hidden = true;
+  render();
+}
+
+function showPhoto() {
+  const p = vlist[vidx];
+  if (!p) { closeViewer(); return; }
+  vimg.src = p.src || p.thumb;
+  vCount.textContent = (vidx + 1) + " / " + vlist.length + "   " +
+                       (LABEL[p.state] || "");
+  resetCard();
+  const nxt = vlist[vidx + 1];
+  if (nxt) { const pre = new Image(); pre.src = nxt.src || nxt.thumb; }
+}
+
+function resetCard() {
+  dx = 0;
+  card.style.transition = "transform .25s ease, opacity .25s ease";
+  card.style.transform = "";
+  card.style.opacity = "1";
+  stampApprove.style.opacity = "0";
+  stampReject.style.opacity = "0";
+}
+
+function next() {
+  busy = false;
+  vidx++;
+  if (vidx >= vlist.length) closeViewer();
+  else showPhoto();
+}
+
+async function commit(action) {
+  const p = vlist[vidx];
+  if (!p) { busy = false; return; }
+  try {
+    await fetch("/api/approval", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [p.id], action }),
+    });
+    p.state = action === "approve" ? "approved" : "rejected";
+    sel.delete(p.id);
+  } catch (e) {
+    /* volgende keer opnieuw */
+  }
+  next();
+}
+
+function vote(action) {
+  if (busy) return;
+  busy = true;
+  const dir = action === "approve" ? 1 : -1;
+  card.style.transition = "transform .22s ease-out, opacity .22s ease-out";
+  card.style.transform = "translate(" + (dir * 120) + "vw, 0) rotate(" +
+                         (dir * 20) + "deg)";
+  card.style.opacity = "0";
+  setTimeout(() => commit(action), 200);
+}
+
+card.addEventListener("pointerdown", (e) => {
+  if (busy) return;
+  dragging = true;
+  startX = e.clientX;
+  dx = 0;
+  card.style.transition = "none";
+  card.setPointerCapture(e.pointerId);
+});
+card.addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  dx = e.clientX - startX;
+  card.style.transform = "translate(" + dx + "px, " + (dx * 0.05) +
+                         "px) rotate(" + (dx * 0.04) + "deg)";
+  stampApprove.style.opacity = Math.max(0, Math.min(1, dx / 120));
+  stampReject.style.opacity = Math.max(0, Math.min(1, -dx / 120));
+});
+card.addEventListener("pointerup", () => {
+  if (!dragging) return;
+  dragging = false;
+  if (dx > 100) vote("approve");
+  else if (dx < -100) vote("reject");
+  else resetCard();
+});
+card.addEventListener("pointercancel", () => { dragging = false; resetCard(); });
+
+document.getElementById("vApprove").addEventListener("click", () => vote("approve"));
+document.getElementById("vReject").addEventListener("click", () => vote("reject"));
+document.getElementById("vClose").addEventListener("click", closeViewer);
+document.addEventListener("keydown", (e) => {
+  if (viewer.hidden) return;
+  if (e.key === "ArrowRight") vote("approve");
+  else if (e.key === "ArrowLeft") vote("reject");
+  else if (e.key === "Escape") closeViewer();
+});
+
+fetch("/api/status").then((r) => r.json())
+  .then((st) => { whoami.textContent = "Ingelogd als " + st.user; })
+  .catch(() => {});
+
+load(true);
+</script>
+</body>
+</html>

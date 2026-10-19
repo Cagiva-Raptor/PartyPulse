@@ -31,6 +31,9 @@ AUTH_PATH = os.environ.get("PARTYPULSE_AUTH") or os.path.join(
     os.path.dirname(CONFIG_PATH), "auth.json"
 )
 STATIC_DIR = os.environ.get("PARTYPULSE_STATIC") or os.path.join(BASE_DIR, "static")
+APPROVALS_PATH = os.environ.get("PARTYPULSE_APPROVALS") or os.path.join(
+    os.path.dirname(CONFIG_PATH), "approvals.json"
+)
 
 DEFAULTS = {
     "album_url": "",
@@ -55,6 +58,7 @@ DEFAULTS = {
     "qr_upload_enabled": False,
     "qr_corner_enabled": False,
     "qr_corner_pos": "tr",
+    "require_approval": False,
 }
 
 UA = (
@@ -64,6 +68,22 @@ UA = (
 
 _cache = {"key": None, "at": 0.0, "photos": [], "title": "", "error": None}
 _cache_lock = threading.Lock()
+
+_state = {"stopped": False}
+_state_lock = threading.Lock()
+_approvals_lock = threading.Lock()
+
+
+def is_stopped():
+    with _state_lock:
+        return _state["stopped"]
+
+
+def set_stopped(value):
+    with _state_lock:
+        _state["stopped"] = bool(value)
+    with _cache_lock:
+        _cache["key"] = None
 
 
 def load_config():
@@ -109,6 +129,39 @@ def make_user_record(password, salt=None):
     salt = salt or secrets.token_hex(16)
     digest = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
     return {"salt": salt, "hash": digest}
+
+
+def load_approvals():
+    """Fotostatus: {foto-id: 'approved' | 'rejected'}; afwezig = nog te keuren."""
+    try:
+        with open(APPROVALS_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    states = data.get("states") if isinstance(data, dict) else None
+    return states if isinstance(states, dict) else {}
+
+
+def save_approvals(states):
+    tmp = APPROVALS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"states": states}, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.replace(tmp, APPROVALS_PATH)
+
+
+def user_can_approve(name):
+    if not name or name == "admin":
+        return True
+    record = load_users().get(name)
+    return bool(isinstance(record, dict) and record.get("can_approve"))
+
+
+def filter_approved(photos, cfg, enabled=True):
+    if not enabled or not cfg.get("require_approval"):
+        return photos
+    states = load_approvals()
+    return [p for p in photos if states.get(str(p["id"])) == "approved"]
 
 
 def fetch_html(url, timeout=30):
@@ -228,11 +281,13 @@ def build_photos(items, cfg, people=None):
     return photos
 
 
-def get_album(force=False):
+def get_album(force=False, apply_approval=True):
+    if is_stopped():
+        return {"title": "", "photos": [], "error": None, "stopped": True}
     cfg = load_config()
     url = (cfg.get("album_url") or "").strip()
     if not url:
-        return {"title": "", "photos": [], "error": "geen album ingesteld"}
+        return {"title": "", "photos": [], "error": "geen album ingesteld", "stopped": False}
     now = time.time()
     with _cache_lock:
         fresh = (
@@ -243,8 +298,9 @@ def get_album(force=False):
         if fresh and not force:
             return {
                 "title": _cache["title"],
-                "photos": _cache["photos"],
+                "photos": filter_approved(_cache["photos"], cfg, apply_approval),
                 "error": _cache["error"],
+                "stopped": False,
             }
     try:
         html = fetch_html(url)
@@ -253,19 +309,25 @@ def get_album(force=False):
         photos = build_photos(items, cfg, people)
         if not photos:
             raise ValueError("geen foto's gevonden in het album")
-        result = {"title": title, "photos": photos, "error": None}
+        result = {"title": title, "photos": photos, "error": None, "stopped": False}
     except Exception as exc:  # noqa: BLE001
         result = {
             "title": "",
             "photos": [],
             "error": f"{type(exc).__name__}: {exc}",
+            "stopped": False,
         }
     with _cache_lock:
         _cache.update(
             key=url, at=now, photos=result["photos"],
             title=result["title"], error=result["error"],
         )
-    return result
+    return {
+        "title": result["title"],
+        "photos": filter_approved(result["photos"], cfg, apply_approval),
+        "error": result["error"],
+        "stopped": result["stopped"],
+    }
 
 
 def _own_unit():
@@ -287,9 +349,13 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
     def _require_auth(self):
+        """Geeft de ingelogde gebruikersnaam terug (None = niet ingelogd).
+
+        Zonder gebruikers in auth.json is de app open en geldt 'admin'.
+        """
         users = load_users()
         if not users:
-            return True
+            return "admin"
         header = self.headers.get("Authorization", "")
         if header.startswith("Basic "):
             try:
@@ -303,12 +369,12 @@ class Handler(BaseHTTPRequestHandler):
                 expected = str(record.get("hash", ""))
                 digest = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
                 if hmac.compare_digest(digest, expected):
-                    return True
+                    return user
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="PartyPulse"')
         self.send_header("Content-Length", "0")
         self.end_headers()
-        return False
+        return None
 
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -346,7 +412,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if not self._require_auth():
+        user = self._require_auth()
+        if user is None:
             return
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
@@ -356,12 +423,54 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(data)
         elif parsed.path == "/api/config":
             self._send_json(load_config())
+        elif parsed.path == "/api/status":
+            self._send_json({
+                "stopped": is_stopped(),
+                "unit": _own_unit(),
+                "user": user,
+                "can_approve": user_can_approve(user),
+            })
         elif parsed.path == "/api/users":
-            self._send_json({"users": sorted(load_users().keys())})
+            users = load_users()
+            self._send_json({
+                "users": [
+                    {
+                        "name": name,
+                        "can_approve": name == "admin"
+                        or bool(record.get("can_approve")),
+                    }
+                    for name, record in sorted(users.items())
+                    if isinstance(record, dict)
+                ]
+            })
+        elif parsed.path == "/api/approval/photos":
+            if not user_can_approve(user):
+                self._send_json({"ok": False, "error": "geen rechten"}, code=403)
+                return
+            force = qs.get("fresh", ["1"])[0] == "1"
+            album = get_album(force=force, apply_approval=False)
+            states = load_approvals()
+            photos = []
+            for p in album["photos"]:
+                item = dict(p)
+                item["state"] = states.get(str(p["id"]), "pending")
+                photos.append(item)
+            self._send_json({
+                "ok": True,
+                "title": album["title"],
+                "error": album["error"],
+                "require_approval": bool(load_config().get("require_approval")),
+                "photos": photos,
+            })
         elif parsed.path in ("/", "/index.html"):
             self._send_file(os.path.join(STATIC_DIR, "index.html"))
         elif parsed.path == "/config":
             self._send_file(os.path.join(STATIC_DIR, "config.html"))
+        elif parsed.path == "/approve":
+            if not user_can_approve(user):
+                self.send_error(403, "geen rechten om foto's goed te keuren")
+                return
+            self._send_file(os.path.join(STATIC_DIR, "approve.html"))
         else:
             safe = parsed.path.lstrip("/")
             candidate = os.path.normpath(os.path.join(STATIC_DIR, safe))
@@ -371,9 +480,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(404, "not found")
 
     def do_POST(self):
-        if not self._require_auth():
+        user = self._require_auth()
+        if user is None:
             return
         parsed = urlparse(self.path)
+        if parsed.path in ("/api/stop", "/api/start"):
+            set_stopped(parsed.path == "/api/stop")
+            self._send_json({"ok": True, "stopped": is_stopped()})
+            return
         if parsed.path == "/api/restart":
             unit = _own_unit()
             if not unit:
@@ -393,6 +507,78 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
             threading.Thread(target=_restart, daemon=True).start()
+            return
+        if parsed.path == "/api/approval":
+            if not user_can_approve(user):
+                self._send_json({"ok": False, "error": "geen rechten"}, code=403)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except ValueError:
+                self._send_json({"ok": False, "error": "ongeldige JSON"}, code=400)
+                return
+            action = payload.get("action")
+            if action not in ("approve", "reject"):
+                self._send_json(
+                    {"ok": False, "error": "action moet 'approve' of 'reject' zijn"},
+                    code=400,
+                )
+                return
+            album = get_album(apply_approval=False)
+            known = [str(p["id"]) for p in album["photos"]]
+            known_set = set(known)
+            ids = payload.get("ids")
+            if ids is None:
+                target = known
+            elif isinstance(ids, list):
+                target = [i for i in (str(x) for x in ids) if i in known_set]
+            else:
+                self._send_json(
+                    {"ok": False, "error": "ids moet een lijst zijn"}, code=400
+                )
+                return
+            value = "approved" if action == "approve" else "rejected"
+            with _approvals_lock:
+                states = load_approvals()
+                for pid in target:
+                    states[pid] = value
+                save_approvals(states)
+            counts = {"approved": 0, "rejected": 0, "pending": 0}
+            for pid in known:
+                counts[states.get(pid, "pending")] += 1
+            self._send_json(
+                {"ok": True, "updated": len(target), "counts": counts}
+            )
+            return
+        m = re.fullmatch(r"/api/users/(.+)/approver", parsed.path)
+        if m:
+            name = unquote(m.group(1))
+            if name == "admin":
+                self._send_json(
+                    {"ok": False, "error": "admin is altijd goedkeurder"}, code=400
+                )
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except ValueError:
+                self._send_json({"ok": False, "error": "ongeldige JSON"}, code=400)
+                return
+            users = load_users()
+            if name not in users:
+                self._send_json(
+                    {"ok": False, "error": "onbekende gebruiker"}, code=404
+                )
+                return
+            users[name]["can_approve"] = bool(payload.get("can_approve"))
+            save_users(users)
+            self._send_json(
+                {"ok": True, "name": name,
+                 "can_approve": users[name]["can_approve"]}
+            )
             return
         if parsed.path == "/api/users":
             length = int(self.headers.get("Content-Length") or 0)
@@ -442,6 +628,7 @@ class Handler(BaseHTTPRequestHandler):
             "end_loop_enabled", "end_film_enabled", "end_film_seconds",
             "top_uploaders_enabled", "top_uploaders_count",
             "qr_upload_enabled", "qr_corner_enabled", "qr_corner_pos",
+            "require_approval",
         }
         updates = {k: v for k, v in payload.items() if k in allowed}
         if "qr_corner_pos" in updates:
@@ -465,7 +652,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True, "config": load_config()})
 
     def do_DELETE(self):
-        if not self._require_auth():
+        user = self._require_auth()
+        if user is None:
             return
         parsed = urlparse(self.path)
         m = re.fullmatch(r"/api/users/(.+)", parsed.path)

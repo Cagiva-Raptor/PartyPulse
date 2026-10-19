@@ -1,5 +1,6 @@
 # Secrets / lokale bestanden — nooit committen
 auth.json
+approvals.json
 *.pem
 *.key
 config.local.json

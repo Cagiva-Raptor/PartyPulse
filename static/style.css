@@ -142,6 +142,35 @@ html, body {
   50% { transform: translateY(-10px); }
 }
 
+/* Gestopte toestand: zwart scherm, witte titel die langzaam rondzweeft */
+#screen.stopped {
+  background: #000;
+}
+
+#screen .stopped-float {
+  font-family: "Courier New", Courier, monospace;
+  font-weight: 400;
+  font-size: clamp(28px, 4.5vw, 64px);
+  color: #fff;
+  white-space: nowrap;
+  text-align: center;
+  animation: stopped-drift 90s linear infinite;
+  will-change: transform;
+}
+
+#screen .stopped-sub {
+  font-size: 0.55em;
+  margin-top: 0.6em;
+}
+
+@keyframes stopped-drift {
+  0%   { transform: translate(-14vw, -10vh); }
+  25%  { transform: translate(14vw, -8vh); }
+  50%  { transform: translate(12vw, 10vh); }
+  75%  { transform: translate(-12vw, 8vh); }
+  100% { transform: translate(-14vw, -10vh); }
+}
+
 #screen h2 {
   font-family: "Righteous", system-ui, sans-serif;
   font-size: clamp(28px, 4.2vw, 64px);

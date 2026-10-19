@@ -22,6 +22,10 @@
   #openAlbumBtn:hover { background: #4b5563; }
   #restartBtn { background: #b45309; margin-left: 12px; }
   #restartBtn:hover { background: #92400e; }
+  #powerBtn { background: #b91c1c; margin-left: 12px; }
+  #powerBtn:hover { background: #991b1b; }
+  #powerBtn.stopped { background: #15803d; }
+  #powerBtn.stopped:hover { background: #166534; }
   #msg { margin-top: 16px; min-height: 24px; }
   #msg.ok { color: #6ee7a8; }
   #msg.err { color: #ff9a9a; }
@@ -32,6 +36,9 @@
                  padding: 8px 10px; border: 1px solid #333; border-radius: 8px;
                  margin-bottom: 6px; }
   .userlist .uname { flex: 1; font-weight: 600; }
+  .userlist .approve-toggle { display: flex; align-items: center; gap: 6px;
+                              font-size: 14px; color: #bbb; white-space: nowrap; }
+  .userlist .approve-toggle input { width: auto; }
   .userlist button { margin-top: 0; padding: 6px 12px; font-size: 14px;
                      background: #b91c1c; }
   .userlist button:hover { background: #991b1b; }
@@ -85,6 +92,11 @@
     <label><input id="ken_burns" type="checkbox" style="width:auto"> Ken Burns-effect (langzame zoom/pan)</label>
 
     <hr>
+    <h3>Goedkeuring</h3>
+    <label><input id="require_approval" type="checkbox" style="width:auto"> Foto's moeten eerst goedgekeurd worden voor ze in de slideshow verschijnen</label>
+    <p class="meta" id="approveLinkWrap" hidden><a href="/approve">→ Foto's goedkeuren (dashboard)</a></p>
+
+    <hr>
     <h3>Vooraan</h3>
     <label for="title_text">Titeltekst (leeg = geen titelscherm; Enter = tussenregel)</label>
     <textarea id="title_text" rows="3" placeholder="PartyPulse"></textarea>
@@ -116,6 +128,7 @@
     </div>
 
     <button type="submit">Opslaan</button>
+    <button type="button" id="powerBtn">App stoppen</button>
     <button type="button" id="restartBtn">Service herstarten</button>
   </form>
 
@@ -137,7 +150,7 @@
   <button type="button" id="userSaveBtn">Gebruiker toevoegen / wachtwoord wijzigen</button>
 
   <div id="msg"></div>
-  <p class="meta"><a href="/">← naar de slideshow</a></p>
+  <p class="meta"><a href="/">← naar de slideshow</a> · <a href="/approve">naar de approvals</a></p>
 </main>
 <script>
 const form = document.getElementById("form");
@@ -146,7 +159,7 @@ const fields = ["album_url","slide_seconds","order","image_width","cache_seconds
                 "poll_seconds","min_show_seconds","priority_new","show_overlay","ken_burns",
                 "title_text","title_seconds","end_loop_enabled","end_film_enabled",
                 "end_film_seconds","top_uploaders_enabled","top_uploaders_count","qr_upload_enabled",
-                "qr_corner_enabled","qr_corner_pos"];
+                "qr_corner_enabled","qr_corner_pos","require_approval"];
 
 const qrCornerPosWrap = document.getElementById("qr_corner_pos_wrap");
 function syncQrCornerPos() {
@@ -195,6 +208,52 @@ document.getElementById("openAlbumBtn").addEventListener("click", () => {
   if (url) window.open(url, "_blank", "noopener");
 });
 
+const powerBtn = document.getElementById("powerBtn");
+let appStopped = false;
+
+function renderPower() {
+  powerBtn.textContent = appStopped ? "App starten" : "App stoppen";
+  powerBtn.classList.toggle("stopped", appStopped);
+}
+
+async function loadStatus() {
+  try {
+    const st = await (await fetch("/api/status", { cache: "no-store" })).json();
+    appStopped = !!st.stopped;
+    renderPower();
+    document.getElementById("approveLinkWrap").hidden = !st.can_approve;
+  } catch (e) {
+    /* status even niet beschikbaar */
+  }
+}
+
+powerBtn.addEventListener("click", async () => {
+  const action = appStopped ? "start" : "stop";
+  if (action === "stop" && !confirm(
+    "App stoppen? De slideshow valt weg; de config blijft bereikbaar zodat je alles terug kunt starten."
+  )) return;
+  msg.textContent = action === "stop" ? "Stoppen…" : "Starten…";
+  msg.className = "";
+  try {
+    const resp = await fetch("/api/" + action, { method: "POST" });
+    const data = await resp.json();
+    if (data.ok) {
+      appStopped = !!data.stopped;
+      renderPower();
+      msg.textContent = appStopped
+        ? "App gestopt. De config blijft actief."
+        : "App gestart ✓";
+      msg.className = "ok";
+    } else {
+      msg.textContent = "Fout: " + (data.error || "onbekend");
+      msg.className = "err";
+    }
+  } catch (e) {
+    msg.textContent = "Fout: " + e.message;
+    msg.className = "err";
+  }
+});
+
 document.getElementById("restartBtn").addEventListener("click", async () => {
   if (!confirm("Service herstarten? De slideshow onderbreekt even.")) return;
   msg.textContent = "Herstarten…";
@@ -221,19 +280,49 @@ async function loadUsers() {
   try {
     const data = await (await fetch("/api/users")).json();
     userList.innerHTML = "";
-    for (const name of data.users || []) {
+    for (const u of data.users || []) {
       const li = document.createElement("li");
       const span = document.createElement("span");
       span.className = "uname";
-      span.textContent = name + (name === "admin" ? " (beschermd)" : "");
+      span.textContent = u.name + (u.name === "admin" ? " (beschermd)" : "");
       li.appendChild(span);
-      if (name !== "admin") {
+
+      const toggle = document.createElement("label");
+      toggle.className = "approve-toggle";
+      const chk = document.createElement("input");
+      chk.type = "checkbox";
+      chk.checked = !!u.can_approve;
+      if (u.name === "admin") chk.disabled = true;
+      chk.addEventListener("change", async () => {
+        const resp = await fetch(
+          "/api/users/" + encodeURIComponent(u.name) + "/approver",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ can_approve: chk.checked }),
+          }
+        );
+        const d = await resp.json();
+        if (d.ok) {
+          msg.textContent = "Goedkeurder bijgewerkt ✓";
+          msg.className = "ok";
+        } else {
+          msg.textContent = "Fout: " + (d.error || "onbekend");
+          msg.className = "err";
+          chk.checked = !chk.checked;
+        }
+      });
+      toggle.appendChild(chk);
+      toggle.appendChild(document.createTextNode(" mag foto's goedkeuren"));
+      li.appendChild(toggle);
+
+      if (u.name !== "admin") {
         const del = document.createElement("button");
         del.type = "button";
         del.textContent = "Verwijderen";
         del.addEventListener("click", async () => {
-          if (!confirm("Gebruiker '" + name + "' verwijderen?")) return;
-          const resp = await fetch("/api/users/" + encodeURIComponent(name),
+          if (!confirm("Gebruiker '" + u.name + "' verwijderen?")) return;
+          const resp = await fetch("/api/users/" + encodeURIComponent(u.name),
                                    { method: "DELETE" });
           const d = await resp.json();
           if (d.ok) {
@@ -282,6 +371,8 @@ document.getElementById("userSaveBtn").addEventListener("click", async () => {
 });
 
 loadUsers();
+loadStatus();
+setInterval(loadStatus, 5000);
 </script>
 </body>
 </html>
